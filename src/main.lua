@@ -23,7 +23,7 @@ end
 local UiLayout=UiLayout or require('src.ui_layout')
 local EquippedState=EquippedState or require('src.equipped_state')
 if rawget(_G, 'AppleBacon') then return rawget(_G, 'AppleBacon') end
-local runtime = {version='1.0.0',build='source', status='starting', armor_writes=false,native_hitbox_source='root',automatic_custom_ui=true,profile={frames=0,tick=0,guard=0,draw=0}}
+local runtime = {version='1.0.1',build='source', status='starting', armor_writes=false,native_hitbox_source='root',automatic_custom_ui=true,profile={frames=0,tick=0,guard=0,draw=0}}
 rawset(_G, 'AppleBacon', runtime)
 -- Phase 0 probe support. Published as globals, not referenced as locals: the debug
 -- command table is already at LuaJIT's 60-upvalue ceiling for a single function.

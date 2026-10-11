@@ -1,5 +1,10 @@
 # Changelog
 
+## AppleBacon 1.0.1
+
+- Korean names when the game runs in Korean: variant names use the game's own armor and passive names (for example "FS-55 유린자 - 이상적인 체형"), the list heading reads "커스텀 변형", and AppleBacon's remaining English notes are translated. Saved variants keep working unchanged.
+- The README mentions Modocracy, the author's mod manager, as another way to install.
+
 ## AppleBacon 1.0.0
 
 First release.

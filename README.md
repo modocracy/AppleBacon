@@ -22,6 +22,7 @@ Only equipment you own can be combined. AppleBacon does not unlock anything.
 
 1. Close Helldivers 2.
 2. Import `AppleBacon-<version>.zip` in **Arsenal** (or another manager that reads the same format) and enable it.
+   You can also use **Modocracy**, the author's own mod manager: https://github.com/modocracy/modocracy/releases/latest
 3. **Purge / Deploy**, then start the game.
 4. Open **Armory → Armor**. Your variants and the **+** card are at the top of the list.
 

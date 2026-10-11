@@ -7,7 +7,7 @@ body:
     attributes:
       label: AppleBacon version and game build
       description: The AppleBacon version from your mod manager. Mention it if Bingus Shared Loader is also installed.
-      placeholder: AppleBacon 1.0.0; Steam build 25480438; no loader
+      placeholder: AppleBacon 1.0.1; Steam build 25480438; no loader
     validations:
       required: true
   - type: textarea

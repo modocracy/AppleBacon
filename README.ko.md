@@ -22,6 +22,7 @@ AppleBacon은 단독으로 동작합니다. Bingus Shared Loader 같은 로더�
 
 1. 게임을 끕니다.
 2. **Arsenal**에서 `AppleBacon-<버전>.zip`을 가져와 켭니다.
+   제작자의 모드 매니저 **Modocracy**를 써도 됩니다: https://github.com/modocracy/modocracy/releases/latest
 3. **Purge / Deploy** 후 게임을 켭니다.
 4. **무기고 → 방어구**를 엽니다. 맨 위에 저장한 변형과 **+** 카드가 있습니다.
 

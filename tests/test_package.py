@@ -36,7 +36,7 @@ def resource(package,folder):
 
 def test_installable_package_and_luajit_discovery_entry():
     subprocess.run([sys.executable,'tools/build.py'],cwd=ROOT,check=True,capture_output=True,text=True)
-    package=ROOT/'dist/AppleBacon-1.0.0.zip'
+    package=ROOT/'dist/AppleBacon-1.0.1.zip'
     first=package.read_bytes()
     settings=[('stats_follow_look','IndependentStats','LookStats'),
               ('helmet_transmog','HelmetOff','HelmetOn'),
@@ -48,14 +48,14 @@ def test_installable_package_and_luajit_discovery_entry():
                         for folder in folders for suffix in ['', '.stream', '.gpu_resources'])
         assert set(z.namelist())==expected
         readme=z.read('README.txt').decode('utf-8')
-        assert readme.startswith('AppleBacon 1.0.0\n') and 'README.ko.md' in readme and 'CREDITS.md' in readme
+        assert readme.startswith('AppleBacon 1.0.1\n') and 'README.ko.md' in readme and 'CREDITS.md' in readme
         for guide, heading in [('README.md', '## Install'), ('README.ko.md', '## 설치')]:
             text = z.read(guide).decode('utf-8')
             assert heading in text and 'CREDITS.md' in text and '%LOCALAPPDATA%\\AppleBacon\\Data' in text
             assert '](sdk/' not in text  # Archive users have no SDK checkout.
         assert 'RatInPlat' in z.read('CREDITS.md').decode('utf-8')
         manifest=json.loads(z.read('manifest.json'))
-        assert manifest['Name']=='AppleBacon 1.0.0' and manifest['IconPath']=='applebacon-icon.png'
+        assert manifest['Name']=='AppleBacon 1.0.1' and manifest['IconPath']=='applebacon-icon.png'
         assert 'CREDITS.md' in manifest['Description']
         icon_bytes=z.read(manifest['IconPath'])
         assert len(icon_bytes)<=64*1024, 'Packaged thumbnail must not include full-resolution artwork'
@@ -132,8 +132,8 @@ assert(State and EquippedState and ArmorySlot and UiWorkflow and AppearancePatch
 
 
 def test_release_tag_must_match_runtime_and_checksum_identifies_exact_zip():
-    package=ROOT/'dist/AppleBacon-1.0.0.zip'
-    subprocess.run([sys.executable,'tools/build.py','--release-tag','v1.0.0'],cwd=ROOT,check=True,capture_output=True,text=True)
+    package=ROOT/'dist/AppleBacon-1.0.1.zip'
+    subprocess.run([sys.executable,'tools/build.py','--release-tag','v1.0.1'],cwd=ROOT,check=True,capture_output=True,text=True)
     before=package.read_bytes()
     import hashlib
     assert package.with_suffix('.zip.sha256').read_text()==f'{hashlib.sha256(before).hexdigest()}  {package.name}\n'

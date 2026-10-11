@@ -71,3 +71,12 @@ assert(not g:custom_headers(11,true)and #calls==0)
 put(top+0x268,b(2,1));put(top+0x118,b(0x1234,4))
 assert(not g:custom_headers(11,true)and #calls==0)
 ''')
+
+
+def test_native_custom_heading_follows_a_korean_game():
+    run_lua(SETUP+r'''
+assert(g:custom_headers(11,true,nil,'variant',true))
+local values={}
+for _,call in ipairs(calls)do if call.value then values[#values+1]=call.value end end
+assert(values[1]=='커스텀'and values[2]=='변형',table.concat(values,','))
+''')

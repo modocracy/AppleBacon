@@ -218,16 +218,27 @@ local function draft_valid(self, model)
   return draft and request_valid(self, model, draft, draft.stats_tuple_id) or false
 end
 
--- Display names are derived, while saved labels remain stable action identities.
-function M.display_name(context, request, fallback)
-  local names=context and (context.variant_labels or context.labels) or {}
-  local localized=context and context.labels or {}
-  local look=(names and names.appearance_id and names.appearance_id[request.appearance_id])
-    or (localized.appearance_id and localized.appearance_id[request.appearance_id])
-  local perk=(names and names.passive_variant_id and names.passive_variant_id[request.passive_variant_id])
-    or (localized.passive_variant_id and localized.passive_variant_id[request.passive_variant_id])
+-- "Look - Passive" from the first of two name tables that knows each part.
+local function derived_name(first, second, request, fallback)
+  first, second = first or {}, second or {}
+  local look=(first.appearance_id and first.appearance_id[request.appearance_id])
+    or (second.appearance_id and second.appearance_id[request.appearance_id])
+  local perk=(first.passive_variant_id and first.passive_variant_id[request.passive_variant_id])
+    or (second.passive_variant_id and second.passive_variant_id[request.passive_variant_id])
   if look and perk then return look..' - '..perk end
   return fallback or (look or 'Armor')..' - '..(perk or 'Passive')
+end
+
+-- Saved labels are stable action identities: the automatic one is made from
+-- the catalog's fixed English names, whatever language the game runs in.
+local function identity_name(context, request, fallback)
+  return derived_name(context and (context.variant_labels or context.labels),
+    context and context.labels, request, fallback)
+end
+
+-- What the player sees: the game's own (localized) names first.
+function M.display_name(context, request, fallback)
+  return derived_name(context and context.labels, context and context.variant_labels, request, fallback)
 end
 
 local function default_name(domain)
@@ -286,7 +297,7 @@ end
 -- The name a draft gets until the player renames it.
 local function name_draft(self, domain, context)
   if self._renamed then return end
-  local base=M.display_name(context,self._draft,default_name(domain))
+  local base=identity_name(context,self._draft,default_name(domain))
   local name=base;local i=2
   while domain.presets[name] and name~=editing_label(self) do name=base..' ('..i..')';i=i+1 end
   self._label=name
@@ -296,9 +307,15 @@ end
 -- a " (2)" suffix) follows the new choices when edited; a name the player gave
 -- is kept.
 local function automatic_name(context, request, name)
-  local base=M.display_name(context,request,'')
+  local base=identity_name(context,request,'')
   if base=='' then return false end
   return name==base or (name:sub(1,#base+2)==base..' (' and name:sub(#base+3):match('^%d+%)$')~=nil)
+end
+-- A draft's label as the player sees it: an automatic name is shown in the
+-- game's own names, keeping its " (2)" suffix; a name the player gave is kept.
+local function shown_label(context, request, label)
+  if type(label)~='string' or type(request)~='table' or not automatic_name(context,request,label) then return label end
+  return M.display_name(context,request,'')..label:sub(#identity_name(context,request,'')+1)
 end
 
 -- Hard rule: a single available passive is no choice. It is taken for the
@@ -362,7 +379,7 @@ function Wizard:view(domain, context)
     can_forward=not self._pending and (self._step==1 and selected.appearance_id~=nil
       or self._step==2 and not skip_stats and selected.stats_id~=nil and selected.stats_tuple_id~=nil) or false,
     options=displayed_options, selection=triple(selected), stats_tuple_id=selected.stats_tuple_id,
-    label=self._label, can_back=self._step > 1 and not self._pending,
+    label=self._label, display_label=shown_label(context,self._draft,self._label), can_back=self._step > 1 and not self._pending,
     can_cancel=self._step > 0 and not self._pending,
     -- Sections are edited in any order: Create is available wherever the
     -- draft is complete.

@@ -178,6 +178,14 @@ M.KO={
   ['Waiting for verified owned choices.']='보유 항목을 확인하는 중입니다.',
   ['Some owned base stats are awaiting verification.']='일부 능력치를 확인하는 중입니다.',
   ['Click to change']='클릭하여 변경',['Choosing']='선택 중',
+  ['Additional effect - description unavailable']='추가 효과 - 설명을 불러올 수 없습니다',
+  ['Effect values from pinned catalog; live bundle not verified']='효과 수치는 내장 목록 기준이며 게임 데이터로 확인되지 않았습니다',
+  ['Use mouse controls (controller unavailable).']='마우스로 조작하세요 (패드를 쓸 수 없음).',
+  ['Armor profile reconcile could not be verified.']='방어구 상태를 확인하지 못했습니다.',
+  ['Armor refresh could not be verified.']='방어구 갱신을 확인하지 못했습니다.',
+  ['Armor preview timed out.']='방어구 미리보기 시간이 초과되었습니다.',
+  ['The native preview changed. Select the variant again.']='미리보기가 바뀌었습니다. 변형을 다시 고르세요.',
+  ['Armory closed before the armor refresh completed.']='방어구 갱신이 끝나기 전에 무기고가 닫혔습니다.',
 }
 local function hangul(value)
   return type(value)=='string'and value:find('[\234-\237][\128-\191][\128-\191]')~=nil
@@ -199,10 +207,12 @@ local function passive_frame_width(r,scale,context)
   local stats=not context.category or context.category==0
   return stats and (r.w-60*scale)/2 or r.w-40*scale
 end
-local function effect_lines(effects,frame_w,scale)
+-- `ko`: AppleBacon's own fixed effect notes are translated before wrapping.
+local function effect_lines(effects,frame_w,scale,ko)
   local limit=math.max(18,math.floor((frame_w/scale-36)/(15*0.56)))
   local lines={}
   for _,effect in ipairs(effects or {})do
+    if ko and M.KO[effect]then effect=M.KO[effect]end
     for _,line in ipairs(word_wrap(effect,limit))do lines[#lines+1]=line end
   end
   return lines
@@ -424,6 +434,7 @@ function M.new(engine)
     metrics.draw_count=metrics.draw_count+1
     context=context or {}
     local preview_icons=context.passive_preview_icons~=false
+    local ko=korean(context)
     local width,height=G.resolution()
     if (sample.kind~='armory'and sample.kind~='deployment') or width<640 or height<480 then self:clear();return false end
     local world
@@ -497,7 +508,7 @@ function M.new(engine)
       self.last_step=view.step
     end
     local review_request=selected_variant and selected_variant.request or view.selection or {}
-    local review_key=stamp({label=selected_variant and (selected_variant.display_name or selected_variant.label) or view.label,
+    local review_key=stamp({label=selected_variant and (selected_variant.display_name or selected_variant.label) or view.display_label or view.label,
       appearance_id=review_request.appearance_id,stats_id=review_request.stats_id,
       passive_variant_id=review_request.passive_variant_id})
     if self.last_review_key~=review_key then self.pages.review=1;self.last_review_key=review_key end
@@ -644,10 +655,10 @@ function M.new(engine)
       local passive=context.passive_variants and context.passive_variants[selected.passive_variant_id]or {}
       local name=caption_signature('passive_variant_id',selected.passive_variant_id)
       if name==selected.passive_variant_id and type(passive.name)=='string'then name=passive.name end
-      local lines=effect_lines(passive.effects,passive_frame_width(layout.review,scale,context),scale)
+      local lines=effect_lines(passive.effects,passive_frame_width(layout.review,scale,context),scale,ko)
       local per=M.REVIEW_LINES
       local visible={rect=layout.review,apply=layout.apply,footer=layout.footer,creating=view.open,
-        label=selected_variant and (selected_variant.display_name or selected_variant.label) or view.label,
+        label=selected_variant and (selected_variant.display_name or selected_variant.label) or view.display_label or view.label,
         look=caption_signature('appearance_id',selected.appearance_id),base=tuple_signature(base),passive_name=name,
         icon=icon_signature(selected.passive_variant_id,passive.icon_hash,not view.open),
         paging=page_signature('review',math.max(1,math.ceil(#lines/per))),lines={}}
@@ -664,7 +675,6 @@ function M.new(engine)
         summary=native_summary,notice=apply_notice,
         look=native_summary and saved_variant and caption_signature('appearance_id',saved_variant.request.appearance_id)or nil}
     end
-    local ko=korean(context)
     local render_state={rendered,proof_stamp,preview_icons,ko}
     local unchanged=self.signature~=nil and self.world==world and same_display(self.render_state,render_state)
     local signature=self.signature
@@ -940,7 +950,7 @@ function M.new(engine)
       local passive_name=caption('passive_variant_id',selected.passive_variant_id)
       if passive_name==selected.passive_variant_id and type(passive.name)=='string' then passive_name=passive.name end
       local per=M.REVIEW_LINES
-      local lines=effect_lines(passive.effects,pbox.w,scale)
+      local lines=effect_lines(passive.effects,pbox.w,scale,ko)
       local pages=math.max(1,math.ceil(#lines/per));self.pages.review=math.min(pages,math.max(1,self.pages.review))
       -- Long descriptions page in place; the pager sits beside the name.
       local name_room=pbox.w/scale-80-(pages>1 and 150 or 0)
@@ -1218,7 +1228,7 @@ function M.new(engine)
           text(clip(footer_note,math.max(4,math.floor(room/(12*0.6*scale)))),layout.picker.x+12*scale,layout.picker.y+13*scale,12,muted)
         end
       end
-      review(view.label,view.selection or {},true)
+      review(view.display_label or view.label,view.selection or {},true)
       self.policy={native_look_pick=view.step==1 and (not view.controller_mode or view.controller_native_looks==true),block_native_grid=view.step~=1 or (view.controller_mode==true and not view.controller_native_looks),
         block_native_apply=true,block_native_compare=true,wizard_open=true,native_picker_rect=layout.picker}
     end

@@ -569,3 +569,24 @@ assert(view.can_forward and view.selection.appearance_id=='look-b')
 assert(act('forward') and wizard:view(state,context).step==2,'Forward from the look keeps it')
 assert(wizard:view(state,context).selection.stats_id=='stats-b','and the stats already chosen')
 ''')
+
+
+def test_korean_game_shows_localized_names_but_saves_the_english_identity():
+    run_lua(FIXTURE + r'''
+context.variant_labels={appearance_id={['look-b']='Beta EN'},passive_variant_id={['perk-b']='Padding EN'}}
+context.labels.appearance_id['look-b']='베타';context.labels.passive_variant_id['perk-b']='패딩'
+state.presets['Beta EN - Padding EN']=catalog.b
+choose();assert(act('select_passive','perk-b'))
+local view=wizard:view(state,context)
+-- The saved label stays English and stable; the player sees the game's names.
+assert(view.label=='Beta EN - Padding EN (2)',view.label)
+assert(view.display_label=='베타 - 패딩 (2)',view.display_label)
+for _,tile in ipairs(view.section.tiles)do
+ if tile.label=='Beta EN - Padding EN'then assert(tile.display_name=='베타 - 패딩')end
+end
+assert(act('rename',nil,'My own'))
+view=wizard:view(state,context)
+assert(view.label=='My own' and view.display_label=='My own')
+local ok,why,tx=act('create');assert(ok,why)
+assert(tx.candidate.presets['My own'])
+''')

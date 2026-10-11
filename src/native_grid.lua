@@ -904,7 +904,8 @@ function M.new(bridge,report,backend)
  end
  -- Native text widgets retain their own font, layout, clipping and draw order.
  local category_override
- function self:custom_headers(custom_count,selected,cards,selected_kind)
+ -- `korean`: the game runs in Korean, and the heading follows it.
+ function self:custom_headers(custom_count,selected,cards,selected_kind,korean)
   local ok,result=pcall(function()
    assert(targets.header_text and targets.category_text and targets.text_template and targets.text_string
     and code_current(),'native custom header proof unavailable')
@@ -970,8 +971,9 @@ function M.new(bridge,report,backend)
     else
      -- Both strings stay alive for the lifetime of the addon, not just this call.
      if task.template then assert(backend.text_template(targets.text_template,task.at,0x62181e42))end
-     assert(backend.text_string(targets.text_string,task.at,0x341f7711,'Custom'))
-     assert(backend.text_string(targets.text_string,task.at,0x15d8f2e2,'Variants'))
+     -- Literals: both strings stay alive for the lifetime of the addon.
+     assert(backend.text_string(targets.text_string,task.at,0x341f7711,korean and '커스텀'or 'Custom'))
+     assert(backend.text_string(targets.text_string,task.at,0x15d8f2e2,korean and '변형'or 'Variants'))
     end
    end
    return true

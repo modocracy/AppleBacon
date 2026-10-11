@@ -384,7 +384,17 @@ function M.new(host)
   local w,h=host.engine.Gui.resolution()
   local prefix={verified=true,clip=Layout.resolve(w,h).prefix,headers={},cells={},original_badges={}}
   if grid.custom_headers then
-   local ok,why=grid:custom_headers(#st.custom_cards,st.selected_label~=nil,st.custom_cards,'variant')
+   -- The game's own names say its language; read once per catalog.
+   if st.korean_catalog~=catalog then
+    st.korean_catalog,st.korean=catalog,false
+    local labels=catalog and catalog.context and catalog.context.labels or {}
+    for _,field in ipairs({'appearance_id','passive_variant_id'})do
+     for _,name in pairs(type(labels[field])=='table'and labels[field]or{})do
+      if type(name)=='string'and name:find('[\234-\237][\128-\191][\128-\191]')then st.korean=true;break end
+     end
+    end
+   end
+   local ok,why=grid:custom_headers(#st.custom_cards,st.selected_label~=nil,st.custom_cards,'variant',st.korean)
    if not ok and st.header_error~=why then say('presentation.header',why);st.header_error=why end
   end
   for _,widget in ipairs(observed.widgets or{})do

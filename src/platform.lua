@@ -1,0 +1,409 @@
+-- platform.lua — AppleBacon host platform layer (LuaJIT 5.1, FFI optional)
+--
+-- Thin adapter between the parent addon and the host: file storage under the
+-- loader's log directory sibling, focus/cursor sampling via user32, and
+-- monotonic time. NO game hooks, NO game memory access, NO global input hooks.
+-- Game-side surfaces are Gui.resolution and Mouse.button. Optional XInput
+-- state reads add controller A without hooks or synthetic input.
+--
+-- ============================================================================
+-- API CONTRACT
+-- ============================================================================
+--
+-- local platform = dofile("src/platform.lua")
+--
+-- platform.MAX_STATE_BYTES -> 1024*1024
+-- platform.safe_name(name) -> name | nil, reason
+--   Name policy: [A-Za-z0-9_-]+ '.' [A-Za-z0-9_-]+ (single dot, no traversal,
+--   no spaces, no unicode). This guards every path we ever build.
+--
+-- platform.map_cursor(cx, cy, w, h, rw, rh) -> x, y | nil, reason
+--   Pure coordinate mapping: client-rect pixel (cx,cy) in a w*h client area
+--   to Gui.resolution (rw,rh) space with a BOTTOM-LEFT origin (Gui convention,
+--   matching DiverKit Pointer.sample). Rejects degenerate rects/out-of-client.
+--
+-- platform.new(loader, engine?, natives?) -> platform
+--   loader : { log_directory = string }  (loader ACP encoding, as supplied)
+--   engine : optional stingray table; defaults to rawget(_G, 'stingray')
+--   natives: optional injection point for tests (real FFI built when omitted).
+--            Table with kernel32/user32-shaped functions + optional
+--            `ffi` + `buffers()` for the POINT/RECT/pid scratch objects.
+--   platform = {
+--     directory  -> loader.log_directory .. '/../Data'  (saves and caches)
+--     read(name)      -> text | nil, reason   -- reason in a small closed set
+--     write_atomic(name, text, preserve?) -> true | nil, reason
+--     sample_input() -> {x=,y=,down=,confirm_down=?,controller_source=?} | nil
+--       Focus is required. A connected controller works with the cursor outside.
+--     now()           -> milliseconds (GetTickCount64, monotonic-ish)
+--   }
+--
+-- write_atomic(name, text, preserve):
+--   1. name validated (see safe_name), |text| <= MAX_STATE_BYTES (1 MiB).
+--   2. Temp file written in the SAME directory (state.tmp): every io.open /
+--      write / flush / close result is checked; any failure removes the temp.
+--   3. Temp is read back and must equal `text` (verify), else abort.
+--   4. Classify the current file: readable -> copied to state.bak via
+--      CopyFileA. ABSENT -> the existing .bak is NOT silently overwritten
+--      unless preserve == false (the last known-good backup is the recovery
+--      path). EXISTS BUT UNREADABLE -> abort with nil, 'primary_unreadable'
+--      WITHOUT replacing the target: an inaccessible primary is preserved for
+--      the caller to inspect; content decode remains the caller's job.
+--   5. MoveFileExA(temp, target, REPLACE_EXISTING|WRITE_THROUGH == 0x9).
+--   When kernel32 cannot be loaded (FFI unavailable on this host), write_atomic
+--   degrades to a best-effort os.rename and returns nil, 'unsupported' on
+--   failure; read() works via io and is unaffected.
+--
+-- FFI declarations are made one-per-pcall with AppleBacon-prefixed typedef
+-- names so a collision with another addon's earlier cdef cannot abort us; all
+-- struct pointers are explicitly cast to void * at call sites (LuaJIT treats
+-- same-layout structs from other cdefs as distinct types).
+--
+-- Mouse evidence (vendor/DiverKit-reference/loadouts.lua, Pointer.new ~1981):
+--   local mouse = assert(engine.Mouse, 'Mouse unavailable')
+--   local left  = mouse.button_id('left')
+--   local value = mouse.button(left)
+--   down = value == true or (type(value) == 'number' and value > 0)
+-- This module mirrors exactly that contract, but tolerates a missing/broken
+-- engine.Mouse by returning down=false instead of erroring.
+
+local M = {}
+local Pad=ControllerInput or require('src.controller_input')
+
+M.MAX_STATE_BYTES = 1024 * 1024
+M.STATE_NAME = 'state.json'
+
+-- Explicit ASCII classes: %w is locale-dependent under some C locales and
+-- could admit non-ASCII "letters"; the name policy must be exactly ASCII.
+local NAME_RE = '^[A-Za-z0-9_-]+%.[A-Za-z0-9_-]+$'
+function M.safe_name(name)
+    if type(name) ~= 'string' then return nil, 'bad_name_type' end
+    if not name:match(NAME_RE) then return nil, 'bad_name' end
+    return name
+end
+
+function M.map_cursor(cx, cy, w, h, rw, rh)
+    if not (w > 0 and h > 0 and rw > 0 and rh > 0) then return nil, 'degenerate' end
+    if not (cx >= 0 and cy >= 0 and cx < w and cy < h) then return nil, 'outside' end
+    -- Top-left client pixels -> bottom-left Gui units (DiverKit convention).
+    return cx * rw / w, (h - cy) * rh / h
+end
+
+-- ---------------------------------------------------------------------------
+-- FFI natives (lazy; individually pcall'd cdefs; void* casts at call sites)
+-- ---------------------------------------------------------------------------
+
+local function build_natives()
+    local ok, ffi = pcall(require, 'ffi')
+    if not ok then return nil end
+    local decls = {
+        -- LuaJIT does not reliably predefine the stdint typedefs; declare them
+        -- first (dupes from other addons are fine under pcall).
+        'typedef signed char int8_t;',
+        'typedef short int16_t;',
+        'typedef int int32_t;',
+        'typedef long long int64_t;',
+        'typedef unsigned char uint8_t;',
+        'typedef unsigned short uint16_t;',
+        'typedef unsigned int uint32_t;',
+        'typedef unsigned long long uint64_t;',
+        'typedef uintptr_t size_t;',
+        'typedef long intptr_t;',
+        'typedef unsigned long uintptr_t;',
+        'typedef struct { int32_t x, y; } AppleBaconPoint;',
+        'typedef struct { int32_t left, top, right, bottom; } AppleBaconRect;',
+        'int CreateDirectoryA(const char*, void*);',
+        'int CopyFileA(const char*, const char*, int);',
+        'int MoveFileExA(const char*, const char*, uint32_t);',
+        'uint32_t GetFileAttributesA(const char*);',
+        'uint32_t GetLastError(void);',
+        'uint64_t GetTickCount64(void);',
+        'void *GetForegroundWindow(void);',
+        'uint32_t GetWindowThreadProcessId(void*, void*);',
+        'uint32_t GetCurrentProcessId(void);',
+        'int GetCursorPos(void*);',
+        'int ScreenToClient(void*, void*);',
+        'int GetClientRect(void*, void*);',
+    }
+    for _, d in ipairs(decls) do pcall(ffi.cdef, d) end  -- first prototype wins; dupes are fine
+    local kok, kernel = pcall(ffi.load, 'kernel32')
+    if not kok then return nil end
+    local uok, user = pcall(ffi.load, 'user32')
+    local INVALID = ffi.cast('void *', ffi.cast('intptr_t', -1))
+    return {
+        ffi = ffi,
+        kernel = kernel,
+        user = uok and user or nil,
+        invalid = INVALID,
+        buffers = function()
+            local pb, rb, idb = { [0] = { x = 0, y = 0 } },
+                { [0] = { left = 0, top = 0, right = 0, bottom = 0 } }, { [0] = 0 }
+            pcall(function() pb = ffi.new('AppleBaconPoint[1]') end)
+            pcall(function() rb = ffi.new('AppleBaconRect[1]') end)
+            pcall(function() idb = ffi.new('uint32_t[1]') end)
+            return pb, rb, idb
+        end,
+    }
+end
+
+local MISSING_ATTR = 0xffffffff
+local ERROR_ALREADY_EXISTS = 183
+local ERROR_FILE_NOT_FOUND = 2
+-- MOVEFILE_REPLACE_EXISTING (0x1) | MOVEFILE_WRITE_THROUGH (0x8) == 0x9.
+-- (0x4 is MOVEFILE_COPY_ALLOWED, not write-through.)
+local MOVE_FLAGS = 0x9
+
+-- ---------------------------------------------------------------------------
+
+-- Bingus Shared Loader supplies log_directory; MDL's compatibility shim does not.
+-- Reconstruct the same conventional location instead of refusing to start, so the
+-- resulting state directory is identical under either host and saved variants,
+-- equipped state and helmet/cape state are found in both cases.
+local function log_directory_of(loader)
+    if type(loader) == 'table' and type(loader.log_directory) == 'string' and #loader.log_directory > 0 then
+        return loader.log_directory
+    end
+    local local_app = os.getenv('LOCALAPPDATA')
+    assert(type(local_app) == 'string' and #local_app > 0,
+        'loader.log_directory required')
+    return local_app .. '/AppleBacon/Logs'
+end
+
+function M.new(loader, engine, natives)
+    assert(type(loader) == 'table', 'loader table required')
+    engine = engine or rawget(_G, 'stingray')
+    natives = natives or build_natives()
+
+    local directory = log_directory_of(loader) .. '/../Data'
+    local kernel, user = natives and natives.kernel or nil, natives and natives.user or nil
+    local point, rect, idbuf = nil, nil, nil
+    if natives and natives.buffers then point, rect, idbuf = natives.buffers() end
+    local controller=Pad.new(natives and natives.ffi,natives and natives.read_controller,
+        kernel and kernel.GetTickCount64 and function()return tonumber(kernel.GetTickCount64())end or nil)
+
+    local function path(name)
+        local ok, why = M.safe_name(name)
+        assert(ok, why)
+        return directory .. '/' .. name
+    end
+
+    local function win_ok(fn, ...)
+        local r = fn(...)
+        return tonumber(r) ~= 0
+    end
+
+    local self = { directory = directory }
+
+    -- -- read ----------------------------------------------------------------
+
+    function self.read(name)
+        local ok, why = M.safe_name(name)
+        if not ok then return nil, why end
+        -- io.open returns (nil, "path: message", errno): classify on the errno,
+        -- falling back to the message text when no errno is supplied.
+        local f, err, errno = io.open(path(name), 'rb')
+        if not f then
+            if errno == ERROR_FILE_NOT_FOUND
+                or errno == nil and type(err) == 'string'
+                and err:find('No such file or directory', 1, true) then
+                return nil, 'missing'
+            end
+            -- anything else (permissions, sharing violation, ...) is not missing
+            return nil, 'read_error'
+        end
+        -- Bound the read: stat the size first, then ask for one byte more than
+        -- that size. The count sizes the runtime's shared read buffer, and a
+        -- buffer of the limit itself is collected and regrown on every read:
+        -- a polled inbox of a few bytes then costs a megabyte each time.
+        local size = f:seek('end')
+        if not size then f:close() return nil, 'read_error' end
+        if size > M.MAX_STATE_BYTES then f:close() return nil, 'too_large' end
+        f:seek('set')
+        local text = f:read(size + 1)
+        local closed = f:close()
+        if not closed then return nil, 'read_error' end
+        if not text then
+            -- EOF: only a legitimate empty read. A nonzero-size object whose
+            -- bytes cannot be read (e.g. a directory that fopen accepted) is
+            -- an error, not an empty state.
+            if size > 0 then return nil, 'read_error' end
+            text = ''
+        end
+        return text
+    end
+
+    -- -- write_atomic ---------------------------------------------------------
+
+    function self.write_atomic(name, text, preserve)
+        local ok, why = M.safe_name(name)
+        if not ok then return nil, why end
+        if type(text) ~= 'string' then return nil, 'bad_text' end
+        if #text > M.MAX_STATE_BYTES then return nil, 'too_large' end
+
+        local base = path(name)
+        local target, temp, backup = base, base .. '.tmp', base .. '.bak'
+
+        if kernel then
+            if not win_ok(kernel.CreateDirectoryA, directory, nil) then
+                local e = tonumber(kernel.GetLastError())
+                if e ~= ERROR_ALREADY_EXISTS then return nil, 'mkdir_' .. e end
+            end
+        end
+
+        -- 2. bounded temp write in the same directory; every step checked.
+        local f = io.open(temp, 'wb')
+        if not f then return nil, 'tmp_open_failed' end
+        local written = f:write(text)
+        local flushed = written and f:flush()
+        local closed = flushed and f:close()
+        if not (written and flushed and closed) then
+            pcall(f.close, f)
+            os.remove(temp)
+            return nil, 'write_failed'
+        end
+
+        -- 3. read-back verify.
+        do
+            local rf = io.open(temp, 'rb')
+            if not rf then os.remove(temp) return nil, 'verify_open_failed' end
+            local data = rf:read(#text + 1)
+            rf:close()
+            if data ~= text then os.remove(temp) return nil, 'verify_failed' end
+        end
+
+        -- 4. Classify the current file BEFORE touching anything:
+        --    - readable            -> refresh .bak from it (CopyFileA)
+        --    - absent              -> leave any existing .bak alone unless the
+        --                             caller explicitly passes preserve == false
+        --    - exists but UNREADABLE -> abort WITHOUT replacing: an inaccessible
+        --                             primary must be preserved for the caller
+        --                             to inspect; do not destroy evidence even
+        --                             when a good .bak exists.
+        local cur_ok, cur_why = self.read(name)
+        local cur_exists
+        if kernel then
+            cur_exists = tonumber(kernel.GetFileAttributesA(target)) ~= MISSING_ATTR
+        else
+            -- no GetFileAttributesA: infer existence from the read outcome
+            cur_exists = cur_ok or cur_why ~= 'missing'
+        end
+        if cur_exists and not cur_ok then
+            os.remove(temp)
+            return nil, 'primary_unreadable'
+        end
+        if kernel then
+            if cur_ok then
+                if not win_ok(kernel.CopyFileA, target, backup, 0) then
+                    os.remove(temp)
+                    return nil, 'backup_failed_' .. tonumber(kernel.GetLastError())
+                end
+            elseif preserve ~= false then
+                -- current absent: keep the last known-good .bak
+            else
+                -- explicit preserve == false: refresh the stale backup anyway
+                kernel.CopyFileA(temp, backup, 0)
+            end
+            -- 5. publish with replace + write-through.
+            if not win_ok(kernel.MoveFileExA, temp, target, MOVE_FLAGS) then
+                os.remove(temp)
+                return nil, 'replace_failed_' .. tonumber(kernel.GetLastError())
+            end
+        else
+            -- kernel32 could not be loaded (FFI unavailable on this host):
+            -- best-effort rename keeps the addon usable but WITHOUT the
+            -- Win32 atomic-replace / write-through guarantees.
+            local renamed = os.rename(temp, target)
+            if not renamed then os.remove(temp) return nil, 'unsupported' end
+        end
+        return true
+    end
+
+    -- -- sample_input ----------------------------------------------------------
+    -- Focus-gated cursor sample: the foreground window must belong to our own
+    -- process (GetForegroundWindow/GetWindowThreadProcessId), the cursor must
+    -- sit inside the client rect for mouse input. Controller confirmation only
+    -- requires focus. Cursor coordinates use Gui space (bottom-left).
+
+    -- The host marks each game update. The guard before the game reads input
+    -- and the UI after it then decide on one observation of the cursor, the
+    -- buttons and the pad, instead of asking the window system and every pad
+    -- again for each caller. Without a mark every call samples, as before.
+    local frame_serial, sampled_serial, sampled
+    function self.begin_frame() frame_serial = (frame_serial or 0) + 1 end
+    local sample_now
+    function self.sample_input()
+        if frame_serial == nil then return sample_now() end
+        if sampled_serial ~= frame_serial then
+            sampled_serial = frame_serial
+            sampled = sample_now()
+        end
+        return sampled
+    end
+    function sample_now()
+        if not (user and kernel and engine and type(engine.Gui) == 'table') then return nil end
+        if type(engine.Gui.resolution) ~= 'function' then return nil end
+        -- Scratch buffers must exist before we can sample; with the real FFI
+        -- these are AppleBaconPoint/Rect cdata arrays, explicitly cast to
+        -- void * at every call site. Without FFI (stub natives) the pass-through
+        -- below lets plain { [0]=... } tables stand in for the same buffers.
+        if not (point and rect and idbuf) then return nil end
+        local ffi = natives and natives.ffi
+        local vp = ffi and ffi.cast and function(v) return ffi.cast('void *', v) end
+            or function(v) return v end
+        local window = user.GetForegroundWindow()
+        if window == nil then return nil end
+        -- Must report success before the pid buffer is trusted.
+        if tonumber(user.GetWindowThreadProcessId(vp(window), vp(idbuf))) == 0 then return nil end
+        if idbuf[0] ~= kernel.GetCurrentProcessId() then return nil end
+        local pad=controller()
+        local cursor_ok=user.GetCursorPos(vp(point))~=0 and user.ScreenToClient(vp(window),vp(point))~=0
+        if user.GetClientRect(vp(window), vp(rect)) == 0 then return nil end
+        local w, h = rect[0].right - rect[0].left, rect[0].bottom - rect[0].top
+        local rw, rh = engine.Gui.resolution()
+        local x,y
+        if cursor_ok then x,y=M.map_cursor(point[0].x,point[0].y,w,h,rw,rh)end
+        if not x and not pad then return nil end
+        local cursor_inside=x~=nil
+        x,y=x or -1,y or -1
+        local down = false
+        local mouse = engine.Mouse
+        if cursor_inside and type(mouse) == 'table' and type(mouse.button_id) == 'function' and type(mouse.button) == 'function' then
+            local value = mouse.button(mouse.button_id('left'))
+            down = value == true or (type(value) == 'number' and value > 0)
+        end
+        -- Wheel movement this frame (Stingray Mouse 'wheel' axis, y component;
+        -- positive away from the user). Absent or unreadable means 0.
+        local wheel = 0
+        if cursor_inside and type(mouse) == 'table' and type(mouse.axis_id) == 'function' and type(mouse.axis) == 'function' then
+            local ok, value = pcall(function()
+                local v = mouse.axis(mouse.axis_id('wheel'))
+                if type(v) == 'number' then return v end
+                local y = v.y
+                if type(y) ~= 'number' then y = v[2] end
+                return y
+            end)
+            if ok and type(value) == 'number' and value == value and math.abs(value) < 100000 then wheel = value end
+        end
+        return {x=x,y=y,down=down,wheel=wheel,confirm_down=pad and pad.confirm_down,
+            controller_source=pad and pad.controller_source,cursor_inside=cursor_inside,
+            back_down=pad and pad.back_down,cancel_down=pad and pad.cancel_down,
+            page_prev_down=pad and pad.page_prev_down,page_next_down=pad and pad.page_next_down,
+            nav_x=pad and pad.nav_x,nav_y=pad and pad.nav_y}
+    end
+
+    -- -- now -------------------------------------------------------------------
+
+    -- Called several times per game update: one closure, not one per call.
+    local function tick_count() return tonumber(kernel.GetTickCount64()) end
+    function self.now()
+        if kernel and kernel.GetTickCount64 then
+            local ok, v = pcall(tick_count)
+            if ok and v then return v end
+        end
+        if natives and natives.GetTickCount64 then return natives.GetTickCount64() end
+        return os.time() * 1000
+    end
+
+    return self
+end
+
+return M

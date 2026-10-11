@@ -1,0 +1,122 @@
+from test_helmet_composition import run
+
+FIXTURE='''
+local Editor=dofile('src/helmet_editor.lua');local State=dofile('src/state.lua')
+local current='b';local selected='b';local files={};local target;local shown;local applies,resets,consumed=0,0,0
+local sample={kind='armory'}
+local snapshot={native_category=1,native_view_mode=0,screen_kind='armory',helmet_selected_kit_id='b'}
+local result={category=1,catalog={a={appearance_id='a',stats_id='stats-a',passive_variant_id='perk-a'},
+ b={appearance_id='b',stats_id='stats-b',passive_variant_id='perk-b'}},owned={a=true,b=true},
+ context={labels={appearance_id={a='Helmet A',b='Helmet B'}}},capabilities={helmet_transmog_enabled=true}}
+local panel={clear=function()end,draw=function(_,_,v)shown=v;return true end,hit=function()return target end,capture=function()return true end}
+local host={state=State,panel=panel,report=function()end,
+ fs={read=function(name)return files[name],files[name]and nil or 'missing'end,write_atomic=function(name,bytes)files[name]=bytes;return true end},
+ player=function()return {sample=function()return {settled=true,request={helmet_id=current},current={helmet_id=current},verify=function()return true end}end}end,
+ snapshot=function()return snapshot end,consume=function()consumed=consumed+1;return true end,
+ patch=function()return {plan=function(_,_,req)return {target_id=req.appearance_id}end,
+ apply=function()applies=applies+1;return true end,reset=function()resets=resets+1;return true end}end}
+local editor=Editor.new(host)
+local function draw(down)editor:draw(sample,snapshot,result,{x=0,y=0,down=down})end
+local function click(key)target=key;draw(true);draw(false)end
+draw(false);click('toggle');click('new_variant')
+-- Current native selection seeds B. Cycle once to A as appearance.
+click('next_option')
+'''
+
+def test_prepare_keeps_native_equip_with_user_and_blocks_equipped_carrier():
+    run(FIXTURE+'''
+current='a';click('apply_variant');assert(applies==0 and not editor:is_active())
+current='b';snapshot.helmet_selected_kit_id='a';click('apply_variant');assert(applies==0)
+snapshot.helmet_selected_kit_id='b';click('apply_variant');assert(applies==1 and editor:is_active())
+assert(current=='b'and shown.notice:find('Helmet A',1,true))
+current='a';click('reset_variant');assert(resets==0 and editor:is_active())
+current='b';click('reset_variant');assert(resets==1 and not editor:is_active())
+''')
+
+def test_separate_helmet_save_file_and_no_body_catalog_entries():
+    run(FIXTURE+'''
+click('save_variant');assert(files['helmets.state']and not files['applebacon.state'])
+local saved=assert(State.decode(files['helmets.state']));assert(saved.presets)
+''')
+
+def test_pre_input_capture_consumes_press_and_release_and_does_not_capture_other_tabs():
+    run(FIXTURE+'''
+editor:before({x=0,y=0,down=true});assert(consumed==1)
+panel.capture=function()return false end
+editor:before({x=200,y=200,down=true});assert(consumed==2)
+editor:before({x=200,y=200,down=false});assert(consumed==3)
+snapshot.native_category=0
+editor:before({x=0,y=0,down=true});assert(consumed==3)
+''')
+
+def test_vanilla_capability_hides_panel_and_cancels_click():
+    run(FIXTURE+'''
+result.capabilities.helmet_transmog_enabled=false
+assert(not editor:draw(sample,snapshot,result,{x=0,y=0,down=false}))
+editor:before({x=0,y=0,down=true});assert(consumed==0)
+''')
+
+
+
+def test_main_shared_accessory_creator_honors_config_with_detected_helmets():
+ from test_creator_failure_main import run as run_main
+ setup="""
+helmet_created=0;helmet_drawn=0
+PlayerCustomizationProbe={new=function()return {}end}
+AppearancePatch={compatible=function()return true end}
+result.helmets={capabilities={helmet_transmog_enabled=true,accessory_transmog_enabled=true}}
+local snapshot=grid.snapshot
+function grid:snapshot(...)
+ local value=snapshot(self,...);value.native_category=1;return value
+end
+local function stub_tab(category,hooks)
+ hooks=hooks or {}
+ return {slot={category=category},available=function()return true end,observe=function()end,
+  frame=hooks.frame or function()end,hide=function()end,away=function()end,leave=function()end,
+  drop_flow=function()end,reset_catalog=function()end,before=hooks.before or function()return true end,
+  restore_startup=function()return true end,respawn=function(_,action)if action=='status'then return {restores=0,abandoned=0}end end,
+  busy=function()return false end,is_active=function()return false end,shutdown=function()end,
+  suspend=function()return true end,resume=function()end}
+end
+AccessoryUi={new=function(host)
+ helmet_created=helmet_created+1
+ return stub_tab(host.category,{frame=function()helmet_drawn=helmet_drawn+1 end})
+end}
+"""
+ for enabled in (False,True):
+  run_main("""
+for i=1,5 do advance()end
+assert(helmet_created=="""+('1' if enabled else '0')+""")
+assert((helmet_drawn>0)=="""+('true' if enabled else 'false')+""")
+assert(logged_count('runtime.error=')==0)
+assert(native_updates>0)
+""",setup=setup,helmet_transmog=enabled)
+
+
+def test_main_does_not_poll_input_for_hidden_accessory_editors_after_armory_exit():
+ from test_creator_failure_main import run as run_main
+ run_main('''
+sample_mode='exit';advance() -- Retire any body-armor input state.
+input_polls=0
+local before_updates=native_updates
+for i=1,1000 do advance()end
+assert(input_polls==0,'Hidden accessory editors polled input '..input_polls..' times')
+assert(native_updates==before_updates+1000)
+assert(logged_count('runtime.error=')==0)
+''',setup='''
+input_polls=0
+-- Instrument the already-created platform through accessory construction.
+PlayerCustomizationProbe={new=function()return {}end}
+AppearancePatch={compatible=function()return true end}
+result.helmets={capabilities={accessory_transmog_enabled=true}}
+result.capes={capabilities={accessory_transmog_enabled=true}}
+local RealAccessory=dofile('src/accessory_ui.lua')
+local instrumented=false
+AccessoryUi={new=function(host)
+ if not instrumented then
+  instrumented=true
+  host.fs.sample_input=function()input_polls=input_polls+1;return input end
+ end
+ return RealAccessory.new(host)
+end}
+''',helmet_transmog=True,automatic=True)

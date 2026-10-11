@@ -1,0 +1,34 @@
+name: Bug report
+description: Something in AppleBacon crashes, looks wrong or does not work.
+title: "[Bug] "
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: AppleBacon version and game build
+      description: The AppleBacon version from your mod manager. Mention it if Bingus Shared Loader is also installed.
+      placeholder: AppleBacon 1.0.0; Steam build 25480438; no loader
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you saw instead. Screenshots help.
+    validations:
+      required: true
+  - type: textarea
+    id: mods
+    attributes:
+      label: Other mods
+      description: Your mod manager and the other mods you had enabled. Say so if it also happens with AppleBacon alone.
+      placeholder: Arsenal; AppleBacon only
+  - type: textarea
+    id: files
+    attributes:
+      label: Logs
+      description: |
+        Attach these files from %LOCALAPPDATA%\AppleBacon (paste the path into the Explorer address bar):
+          - Logs\AppleBacon.log and Logs\AppleBacon.previous.log (if present)
+          - Data\STATUS.txt
+        Do not attach your save files.
